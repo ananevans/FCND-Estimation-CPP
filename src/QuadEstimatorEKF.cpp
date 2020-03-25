@@ -93,13 +93,23 @@ void QuadEstimatorEKF::UpdateFromIMU(V3F accel, V3F gyro)
   // (replace the code below)
   // make sure you comment it out when you add your own code -- otherwise e.g. you might integrate yaw twice
 
-  float predictedPitch = pitchEst + dtIMU * gyro.y;
-  float predictedRoll = rollEst + dtIMU * gyro.x;
-  ekfState(6) = ekfState(6) + dtIMU * gyro.z;	// yaw
+  float predictedPitch, predictedRoll;
+  Quaternion<float> q = Quaternion<float>::FromEuler123_RPY(rollEst, pitchEst, ekfState(6));
+  q = q.IntegrateBodyRate(gyro, dtIMU);
+  predictedRoll = q.Roll();
+  predictedPitch = q.Pitch();
+  ekfState(6) = q.Yaw();
 
   // normalize yaw to -pi .. pi
-  if (ekfState(6) > F_PI) ekfState(6) -= 2.f*F_PI;
-  if (ekfState(6) < -F_PI) ekfState(6) += 2.f*F_PI;
+  if (ekfState(6) > F_PI) {
+    ekfState(6) -= 2*F_PI;
+  } else {
+    if (ekfState(6) < -F_PI) {
+        ekfState(6) += 2*F_PI;
+    }
+  }
+  assert(ekfState(6) <= F_PI);
+  assert(ekfState(6) >= -F_PI);
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -162,6 +172,16 @@ VectorXf QuadEstimatorEKF::PredictState(VectorXf curState, float dt, V3F accel, 
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+  V3F accel_inertial = attitude.Rotate_BtoI(accel);
+  accel_inertial.z = accel_inertial.z - CONST_GRAVITY;
+
+  predictedState << curState(0) + curState(3) * dt,
+          curState(1) + curState(4) * dt,
+          curState(2) + curState(5) * dt,
+          curState(3) + accel_inertial.x * dt,
+          curState(4) + accel_inertial.y * dt,
+          curState(5) + accel_inertial.z * dt,
+          curState(6);
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -188,7 +208,15 @@ MatrixXf QuadEstimatorEKF::GetRbgPrime(float roll, float pitch, float yaw)
   //   that your calculations are reasonable
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
-
+  float phi = roll;
+  float theta = pitch;
+  float psi = yaw;
+  RbgPrime(0,0) = -cos(theta) * sin(psi);
+  RbgPrime(0,1) = -sin(phi) * sin(theta) * sin(psi) - cos(phi) * cos(psi);
+  RbgPrime(0,2) = -cos(phi) * sin(theta) * sin(psi) + sin(phi) * cos(psi);
+  RbgPrime(1,0) = cos(theta) * cos(psi);
+  RbgPrime(1,1) = sin(phi) * sin(theta) * cos(psi) - cos(phi) * sin(psi);
+  RbgPrime(1,2) = cos(phi) * sin(theta) * cos(psi) + sin(phi) * sin(psi);
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -235,6 +263,14 @@ void QuadEstimatorEKF::Predict(float dt, V3F accel, V3F gyro)
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+  gPrime(0,3) = dt;
+  gPrime(1,4) = dt;
+  gPrime(2,5) = dt;
+  gPrime(3,6) = RbgPrime(0,0) * accel.x * dt + RbgPrime(0,1) * accel.y * dt + RbgPrime(0,2) * accel.z * dt;
+  gPrime(4,6) = RbgPrime(1,0) * accel.x * dt + RbgPrime(1,1) * accel.y * dt + RbgPrime(1,2) * accel.z * dt;
+  gPrime(5,6) = RbgPrime(2,0) * accel.x * dt + RbgPrime(2,1) * accel.y * dt + RbgPrime(2,2) * accel.z * dt;
+
+  ekfCov = gPrime * ekfCov * gPrime.transpose() + Q;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -260,6 +296,11 @@ void QuadEstimatorEKF::UpdateFromGPS(V3F pos, V3F vel)
   //  - this is a very simple update
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+  for (int i = 0; i < 6; i++) {
+    zFromX(i) = ekfState(i);
+    hPrime(i,i) = 1;
+  }
+
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
   Update(z, hPrime, R_GPS, zFromX);
@@ -281,6 +322,19 @@ void QuadEstimatorEKF::UpdateFromMag(float magYaw)
   //  - The magnetomer measurement covariance is available in member variable R_Mag
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+  hPrime(0,6) = 1.0;
+  zFromX(0) = ekfState(6);
+  float diff = magYaw - ekfState(6);
+  if ( diff > F_PI) {
+    zFromX(0) += 2 * F_PI;
+  }
+
+  if ( diff < -F_PI) {
+    zFromX(0) -= 2 * F_PI;
+  }
+
+  assert( zFromX(0) -z(0) <= F_PI );
+  assert( zFromX(0) -z(0) >= -F_PI );
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
